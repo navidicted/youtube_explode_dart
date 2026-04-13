@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 
@@ -16,6 +17,8 @@ import 'hls_manifest.dart';
 class YoutubeHttpClient extends http.BaseClient {
   final http.Client _httpClient;
   static final _logger = Logger('YoutubeExplode.HttpClient');
+
+  static String corsProxyUrl = '';
 
   // Flag to interrupt receiving stream.
   bool _closed = false;
@@ -68,8 +71,10 @@ class YoutubeHttpClient extends http.BaseClient {
     Map<String, String> headers = const {},
     bool validate = true,
   }) async {
-    final response =
-        await get(url is String ? Uri.parse(url) : url, headers: headers);
+    final response = await get(
+      url is String ? Uri.parse(url) : url,
+      headers: headers,
+    );
     if (_closed) throw HttpClientClosedException();
 
     if (validate) {
@@ -107,8 +112,12 @@ class YoutubeHttpClient extends http.BaseClient {
     Encoding? encoding,
     bool validate = false,
   }) async {
-    final response =
-        await super.post(url, headers: headers, body: body, encoding: encoding);
+    final response = await super.post(
+      url,
+      headers: headers,
+      body: body,
+      encoding: encoding,
+    );
     if (_closed) throw HttpClientClosedException();
 
     if (validate) {
@@ -212,8 +221,10 @@ class YoutubeHttpClient extends http.BaseClient {
             request = http.Request('get', url);
             request.headers['Range'] = 'bytes=$from-$to';
           } else {
-            request =
-                http.Request('get', url.setQueryParam('range', '$from-$to'));
+            request = http.Request(
+              'get',
+              url.setQueryParam('range', '$from-$to'),
+            );
           }
           return send(request);
         });
@@ -221,13 +232,16 @@ class YoutubeHttpClient extends http.BaseClient {
           try {
             _validateResponse(response, response.statusCode);
           } on FatalFailureException {
-            final newManifest =
-                await streamClient.getManifest(streamInfo.videoId);
-            final stream = newManifest.streams
-                .firstWhereOrNull((e) => e.tag == streamInfo.tag);
+            final newManifest = await streamClient.getManifest(
+              streamInfo.videoId,
+            );
+            final stream = newManifest.streams.firstWhereOrNull(
+              (e) => e.tag == streamInfo.tag,
+            );
             if (stream == null) {
               _logger.severe(
-                  'Error: Could not find the stream in the new manifest (due to Youtube error)');
+                'Error: Could not find the stream in the new manifest (due to Youtube error)',
+              );
               rethrow;
             }
             url = stream.url;
@@ -290,8 +304,11 @@ class YoutubeHttpClient extends http.BaseClient {
       sendPost(action, {'continuation': token}, headers: headers);
 
   /// Sends a call to the youtube api endpoint.
-  Future<JsonMap> sendPost(String action, Map<String, dynamic> data,
-      {Map<String, String>? headers}) {
+  Future<JsonMap> sendPost(
+    String action,
+    Map<String, dynamic> data, {
+    Map<String, String>? headers,
+  }) {
     assert(action == 'next' || action == 'browse' || action == 'search');
 
     final url = Uri.parse(
@@ -354,11 +371,28 @@ class YoutubeHttpClient extends http.BaseClient {
       }
     });
 
-    _logger.fine('Sending request: $request', null, StackTrace.current);
-    _logger.finer('Request headers: ${request.headers}');
-    if (request is http.Request) {
-      _logger.finer('Request body: ${request.body}');
+    http.BaseRequest finalRequest = request;
+    if (kIsWeb && corsProxyUrl.isNotEmpty) {
+      final proxiedUrl = Uri.parse(
+        '$corsProxyUrl${Uri.encodeComponent(request.url.toString())}',
+      );
+      if (request is http.Request) {
+        final proxied = http.Request(request.method, proxiedUrl)
+          ..headers.addAll(request.headers)
+          ..body = request.body;
+        finalRequest = proxied;
+      } else {
+        final proxied = http.Request(request.method, proxiedUrl)
+          ..headers.addAll(request.headers);
+        finalRequest = proxied;
+      }
     }
-    return _httpClient.send(request);
+
+    _logger.fine('Sending request: $finalRequest', null, StackTrace.current);
+    _logger.finer('Request headers: ${finalRequest.headers}');
+    if (finalRequest is http.Request) {
+      _logger.finer('Request body: ${finalRequest.body}');
+    }
+    return _httpClient.send(finalRequest);
   }
 }
